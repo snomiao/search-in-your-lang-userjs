@@ -6,7 +6,7 @@ Works on Google, YouTube, Wikipedia, Bing, Amazon, DuckDuckGo, and most other si
 
 ## Usage
 
-1. Install a userscript manager (Tampermonkey or Violentmonkey), then install [`search-in-your-lang.user.js`](./search-in-your-lang.user.js).
+1. Install a userscript manager (Tampermonkey or Violentmonkey), then install it from [Greasy Fork](https://greasyfork.org/scripts/597648-search-in-your-language).
 2. Type in a search box. A small chip appears, for example `Tab ⇥ 日本語 猫のビデオ`.
 3. Keys:
    - **Tab**: swap between the translation and what you typed.
