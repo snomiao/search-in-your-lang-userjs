@@ -28,7 +28,7 @@ Based on [google-bilingual-search-enja](https://gist.github.com/snomiao/ecee0271
 
 ## Slack Translate Draft
 
-[`slack-translate-draft.user.js`](./slack-translate-draft.user.js) is a separate script for Slack's message box.
+[`slack-translate-draft.user.js`](./slack-translate-draft.user.js) is a separate script for Slack's message box. Install it from [Greasy Fork](https://greasyfork.org/scripts/597657-slack-translate-draft).
 
 - **Alt+T**: translate your draft. Press it again to restore the original.
 - **Esc**: hide the preview chip.
