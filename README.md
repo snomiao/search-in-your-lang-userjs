@@ -1,0 +1,27 @@
+# Search in Your Language (userscript)
+
+Press **Tab** in any search box to translate your keyword into your browser's primary language. Press **Tab** again to switch back to what you typed.
+
+Works on Google, YouTube, Wikipedia, Bing, Amazon, DuckDuckGo, and most other sites. It finds search boxes by `type="search"`, `role="searchbox"`/`[role=search]`, common query names (`q`, `search_query`, `wd`, …), and search-like ids, placeholders, and form actions.
+
+## Usage
+
+1. Install a userscript manager (Tampermonkey or Violentmonkey), then install [`search-in-your-lang.user.js`](./search-in-your-lang.user.js).
+2. Type in a search box. A small chip appears, for example `Tab ⇥ 日本語 猫のビデオ`.
+3. Keys:
+   - **Tab**: swap between the translation and what you typed.
+   - **Esc**: hide the chip so Tab moves focus as usual.
+   - **Shift+Tab**: is never intercepted.
+   - **Click the chip**: same as Tab.
+
+## Target language
+
+- The target is `navigator.languages[0]`, your browser's primary language.
+- If you already typed in that language, the script offers your next browser language instead. When there is no next language, it offers English.
+- You can override the target from the userscript menu with **Set target language…**.
+
+## Translation
+
+The script uses Google Translate's public endpoints through `GM_xmlhttpRequest`, so CORS doesn't block it. If those fail, it falls back to MyMemory. Results are cached per query.
+
+Based on [google-bilingual-search-enja](https://gist.github.com/snomiao/ecee0271ac7599d526aaa210293e3f43).
