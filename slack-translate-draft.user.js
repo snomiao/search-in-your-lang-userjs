@@ -4,10 +4,10 @@
 // @name:ja            Slack 下書き翻訳
 // @namespace          snomiao@gmail.com
 // @author             snomiao@gmail.com
-// @version            0.1.0
-// @description        [snolab] Press Alt+T in Slack's message box to translate your draft into the channel's language, keeping bold/italic/code/links/mentions/emoji. Alt+T again to switch back. Uses Chrome's on-device Translator as fallback.
-// @description:zh     [snolab] 在 Slack 输入框按 Alt+T，把草稿翻译成频道所用语言，保留粗体/代码/链接/提及/表情；再按 Alt+T 切回原文。
-// @description:ja     [snolab] Slack の入力欄で Alt+T を押すと下書きをチャンネルの言語に翻訳（太字・コード・リンク・メンション・絵文字を保持）。もう一度 Alt+T で元に戻す。
+// @version            0.2.0
+// @description        [snolab] In Slack's message box, press Tab to reach a translate button and Enter/Space (or just Alt+T) to translate your draft into the channel's language, keeping bold/italic/code/links/mentions/emoji. Alt+T again to switch back. Uses Chrome's on-device Translator as fallback.
+// @description:zh     [snolab] 在 Slack 输入框按 Tab 聚焦翻译按钮再按 Enter/空格（或直接 Alt+T），把草稿翻译成频道所用语言，保留粗体/代码/链接/提及/表情；再按 Alt+T 切回原文。
+// @description:ja     [snolab] Slack の入力欄で Tab → 翻訳ボタンで Enter/スペース（または Alt+T）を押すと下書きをチャンネルの言語に翻訳（太字・コード・リンク・メンション・絵文字を保持）。もう一度 Alt+T で元に戻す。
 // @match              https://app.slack.com/*
 // @run-at             document-idle
 // @grant              unsafeWindow
@@ -157,16 +157,16 @@
         return job;
     };
 
-    // ---------- chip UI ----------
+    // ---------- chip UI: a real <button>, Tab from the composer lands on it ----------
     const h = (tag, className, textContent = "") => Object.assign(document.createElement(tag), { className, textContent });
     const host = Object.assign(document.createElement("div"), { id: "slack-translate-draft-chip" });
     Object.assign(host.style, { position: "fixed", zIndex: 2147483647, top: 0, left: 0, display: "none" });
     const root = host.attachShadow({ mode: "open" }), sheet = new CSSStyleSheet();
-    sheet.replaceSync(`.chip{font:13px/1.4 system-ui,sans-serif;display:flex;gap:6px;align-items:center;max-width:min(560px,80vw);padding:4px 8px;border-radius:8px;cursor:pointer;user-select:none;background:#1a1d21;color:#e8eaed;box-shadow:0 2px 8px #0005;border:1px solid #5f6368}
-        .key{font-size:11px;padding:0 5px;border:1px solid #9aa0a6;border-radius:4px;color:#bdc1c6;white-space:nowrap}.lang{color:#8ab4f8;white-space:nowrap}.text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.busy .text{opacity:.6;font-style:italic}`);
+    sheet.replaceSync(`.chip{font:13px/1.4 system-ui,sans-serif;display:flex;gap:6px;align-items:center;max-width:min(560px,80vw);padding:4px 8px;border-radius:8px;cursor:pointer;user-select:none;background:#1a1d21;color:#e8eaed;box-shadow:0 2px 8px #0005;border:1px solid #5f6368;text-align:left}
+        .chip:focus-visible{outline:2px solid #8ab4f8;outline-offset:1px}.k2,.chip:focus .k1{display:none}.chip:focus .k2{display:inline}.key{font-size:11px;padding:0 5px;border:1px solid #9aa0a6;border-radius:4px;color:#bdc1c6;white-space:nowrap}.lang{color:#8ab4f8;white-space:nowrap}.text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.busy .text{opacity:.6;font-style:italic}`);
     root.adoptedStyleSheets = [sheet];
-    const [chip, langEl, textEl] = [h("div", "chip"), h("span", "lang"), h("span", "text")];
-    chip.append(h("span", "key", "Alt+T"), langEl, textEl), root.append(chip);
+    const [chip, langEl, textEl] = [h("button", "chip"), h("span", "lang"), h("span", "text")];
+    chip.append(h("span", "key k1", "Tab ⇥ / Alt+T"), h("span", "key k2", "Enter ⏎"), langEl, textEl), root.append(chip);
 
     // ---------- state ----------
     let quill = null, editor = null, original = null, result = null, pending = null, applied = false, dismissed = false, timer = 0, selfChange = false;
@@ -178,6 +178,7 @@
         host.isConnected || document.documentElement.append(host);
         chip.classList.toggle("busy", !result && !applied);
         [langEl.textContent, textEl.textContent, host.style.display] = [lang, text, "block"];
+        chip.ariaLabel = applied ? "Restore original draft" : result ? `Translate draft to ${lang}: ${text}` : text;
         position();
     };
     const position = () => {
@@ -211,24 +212,42 @@
     };
     const toggle = async () => {
         if (!quill) return;
-        if (applied) return setDelta(original.ops), (applied = false), render();
-        const q = quill, r = result || (await pending?.catch(() => null));
-        if (r && q === quill) setDelta(r.ops), (applied = true), render();
+        const q = quill;
+        if (applied) setDelta(original.ops), (applied = false);
+        else {
+            const r = result || (await pending?.catch(() => null));
+            if (q !== quill) return;
+            r && (setDelta(r.ops), (applied = true));
+        }
+        q.focus(), render(); // back in the composer: Enter now sends
     };
+    const nextTabbable = (from) =>
+        [...document.querySelectorAll("a[href],button,input,select,textarea,[tabindex],[contenteditable]")].find((el) =>
+            el.tabIndex >= 0 && !el.disabled && !from.contains(el) && from.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING && el.getClientRects().length);
+    // Tab belongs to Slack while completing :emoji:/@name or inside a list/code block
+    const tabIsSlacks = () => document.querySelector("[data-qa=texty_autocomplete_menu]") || ["list", "code-block"].some((f) => quill.getFormat()[f]);
 
     // ---------- events ----------
     document.addEventListener("focusin", (e) => (quillOf(e.target) ? attach(e.target) : null), true);
-    document.addEventListener("focusout", () => setTimeout(() => !quillOf(document.activeElement) && (host.style.display = "none"), 150), true);
+    document.addEventListener("focusout", () => setTimeout(() => !quillOf(document.activeElement) && document.activeElement !== host && (host.style.display = "none"), 150), true);
     window.addEventListener("keydown", (e) => {
         if (!quill || !quillOf(e.target) || e.isComposing) return;
         if (e.key === "Escape" && host.style.display !== "none") return (dismissed = true), render();
+        if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && host.style.display !== "none" && !tabIsSlacks())
+            return e.preventDefault(), e.stopImmediatePropagation(), chip.focus(); // Tab: composer → button
         if (e.code !== "KeyT" || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
         e.preventDefault(), e.stopImmediatePropagation();
         dismissed = false;
         toggle();
     }, true);
-    chip.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in composer
-    chip.addEventListener("click", toggle);
+    chip.addEventListener("keydown", (e) => {
+        e.stopPropagation(); // keep Slack's global hotkeys away from the button
+        if (e.key === "Enter" || e.key === " ") return e.preventDefault(), toggle();
+        if (e.key === "Escape" || (e.key === "Tab" && e.shiftKey)) return e.preventDefault(), quill?.focus(); // back to the composer
+        if (e.key === "Tab") { const n = editor && nextTabbable(editor); n && (e.preventDefault(), n.focus()); }
+    });
+    chip.addEventListener("mousedown", (e) => e.preventDefault()); // mouse click keeps focus in composer
+    chip.addEventListener("click", (e) => e.detail && toggle()); // detail=0 → keyboard click, already handled
     addEventListener("resize", () => requestAnimationFrame(position));
     quillOf(document.activeElement) && attach(document.activeElement);
 })();

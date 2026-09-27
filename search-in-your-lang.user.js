@@ -4,10 +4,10 @@
 // @name:ja            あなたの言語で検索
 // @namespace          snomiao@gmail.com
 // @author             snomiao@gmail.com
-// @version            0.2.1
-// @description        [snolab] Press Tab in any search box (Google, YouTube, Wikipedia, Bing, Amazon, ...) to translate your keyword into your browser's primary language, Tab again to switch back. Uses Chrome's on-device Translator API when available.
-// @description:zh     [snolab] 在任意搜索框中按 Tab 把关键词翻译成浏览器首选语言，再按 Tab 切回原文。优先使用 Chrome 内置翻译 API。
-// @description:ja     [snolab] どの検索ボックスでも Tab でキーワードをブラウザの第一言語に翻訳、もう一度 Tab で元に戻す。Chrome 内蔵翻訳 API を優先使用。
+// @version            0.3.0
+// @description        [snolab] Press Tab in any search box (Google, YouTube, Wikipedia, Bing, Amazon, ...) to reach a translate button, then Enter/Space to translate your keyword into your browser's primary language (use it again to switch back). Uses Chrome's on-device Translator API when available.
+// @description:zh     [snolab] 在任意搜索框中按 Tab 聚焦翻译按钮，按 Enter/空格 把关键词翻译成浏览器首选语言（再用一次切回原文）。优先使用 Chrome 内置翻译 API。
+// @description:ja     [snolab] どの検索ボックスでも Tab で翻訳ボタンへ移動し、Enter/スペースでキーワードをブラウザの第一言語に翻訳（もう一度で元に戻す）。Chrome 内蔵翻訳 API を優先使用。
 // @match              *://*/*
 // @run-at             document-idle
 // @noframes
@@ -105,16 +105,17 @@
         el.setSelectionRange?.(v.length, v.length);
     };
 
-    // chip UI (no innerHTML: YouTube enforces Trusted Types)
+    // chip = a real <button> that joins the tab order right after the box (no innerHTML: YouTube enforces Trusted Types)
     const h = (tag, className, textContent = "") => Object.assign(document.createElement(tag), { className, textContent });
     const host = Object.assign(document.createElement("div"), { id: "search-in-your-lang-chip" });
     Object.assign(host.style, { position: "fixed", zIndex: 2147483647, top: 0, left: 0, display: "none" });
     const root = host.attachShadow({ mode: "open" }), sheet = new CSSStyleSheet();
-    sheet.replaceSync(`.chip{font:13px/1.4 system-ui,sans-serif;display:flex;gap:6px;align-items:center;max-width:min(520px,90vw);padding:4px 8px;border-radius:8px;cursor:pointer;user-select:none;background:#202124;color:#e8eaed;box-shadow:0 2px 8px #0005;border:1px solid #5f6368}
-        .key{font-size:11px;padding:0 5px;border:1px solid #9aa0a6;border-radius:4px;color:#bdc1c6}.lang{color:#8ab4f8}.text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.busy .text{opacity:.6;font-style:italic}`);
+    sheet.replaceSync(`.chip{font:13px/1.4 system-ui,sans-serif;display:flex;gap:6px;align-items:center;max-width:min(520px,90vw);padding:4px 8px;border-radius:8px;cursor:pointer;user-select:none;background:#202124;color:#e8eaed;box-shadow:0 2px 8px #0005;border:1px solid #5f6368;text-align:left}
+        .chip:focus-visible{outline:2px solid #8ab4f8;outline-offset:1px}.key{font-size:11px;padding:0 5px;border:1px solid #9aa0a6;border-radius:4px;color:#bdc1c6;white-space:nowrap}
+        .k2,.chip:focus .k1{display:none}.chip:focus .k2{display:inline}.lang{color:#8ab4f8;white-space:nowrap}.text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.busy .text{opacity:.6;font-style:italic}`);
     root.adoptedStyleSheets = [sheet];
-    const [chip, langEl, textEl] = [h("div", "chip"), h("span", "lang"), h("span", "text")];
-    chip.append(h("span", "key", "Tab ⇥"), langEl, textEl), root.append(chip);
+    const [chip, langEl, textEl] = [h("button", "chip"), h("span", "lang"), h("span", "text")];
+    chip.append(h("span", "key k1", "Tab ⇥"), h("span", "key k2", "Enter ⏎"), langEl, textEl), root.append(chip);
 
     // state
     let box = null, original = "", result = null, pending = null, applied = false, dismissed = false, timer = 0, selfInput = false;
@@ -125,6 +126,7 @@
         host.isConnected || document.documentElement.append(host);
         chip.classList.toggle("busy", !result && !applied);
         [langEl.textContent, textEl.textContent, host.style.display] = [lang, text, "block"];
+        chip.ariaLabel = applied ? `Restore original: ${original}` : result ? `Translate to ${lang}: ${text}` : text;
         position();
     };
     const position = () => {
@@ -141,32 +143,58 @@
     };
     const bound = new WeakSet();
     const attach = (el) => {
-        if (box === el) return;
+        if (box === el) return render();
         [box, original, applied, dismissed] = [el, el.value, false, false];
         bound.has(el) || (bound.add(el), el.addEventListener("input", () => !selfInput && el === box && (([original, applied, dismissed] = [el.value, false, false]), schedule())));
         schedule();
     };
     const detach = () => (clearTimeout(timer), (box = pending = null), render());
-    const apply = (v) => { selfInput = true; try { setValue(box, v); } finally { selfInput = false; } box.focus(); };
+    const apply = (v) => { selfInput = true; try { setValue(box, v); } finally { selfInput = false; } };
     const toggle = async () => {
-        if (applied) return apply(original), (applied = false), render();
-        const el = box, r = result || (await pending?.catch(() => null));
-        if (r && el === box) apply(r.text), (applied = true), render();
+        if (!box) return;
+        const el = box;
+        if (applied) apply(original), (applied = false);
+        else {
+            const r = result || (await pending?.catch(() => null));
+            if (el !== box) return;
+            r && (apply(r.text), (applied = true));
+        }
+        el.focus(), render(); // back in the box, caret at end: Enter now searches
+    };
+
+    // focus helpers: the button lives in its own layer, so walk the page's tab order ourselves
+    const nextTabbable = (from) => {
+        const anchor = from.getRootNode().host || from;
+        return [...document.querySelectorAll("a[href],button,input,select,textarea,iframe,summary,[tabindex],[contenteditable]")].find((el) =>
+            el.tabIndex >= 0 && !el.disabled && !anchor.contains(el) && anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING &&
+            el.getClientRects().length && getComputedStyle(el).visibility !== "hidden");
     };
 
     // events
     const deep = (e) => e.composedPath?.()[0] || e.target;
+    const inChip = (e) => e.composedPath?.().includes(host);
     const active = () => document.activeElement?.shadowRoot?.activeElement || document.activeElement;
-    document.addEventListener("focusin", (e) => (isSearchBox(deep(e)) ? attach(deep(e)) : deep(e) !== box && detach()), true);
-    document.addEventListener("focusout", (e) => deep(e) === box && setTimeout(() => box && active() !== box && detach(), 150), true);
+    const stillHere = () => { const a = active(); return a === box || a === chip; };
+    let hold = 0; // some sites (Bing) yank focus back into their box on blur; hand it to the button once more
+    document.addEventListener("focusin", (e) => {
+        if (deep(e) === box && performance.now() < hold) return (hold = 0), setTimeout(() => chip.focus());
+        inChip(e) || (isSearchBox(deep(e)) ? attach(deep(e)) : deep(e) !== box && detach());
+    }, true);
+    document.addEventListener("focusout", (e) => (deep(e) === box || inChip(e)) && setTimeout(() => box && !stillHere() && detach(), 150), true);
     window.addEventListener("keydown", (e) => {
         if (!box || deep(e) !== box || e.isComposing || e.keyCode === 229) return;
         if (e.key === "Escape" && shown()) return (dismissed = true), render(); // site still gets Escape
         if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || !shown()) return;
-        e.preventDefault(), e.stopImmediatePropagation(), toggle();
+        e.preventDefault(), e.stopImmediatePropagation(), (hold = performance.now() + 300), chip.focus(); // Tab: box → button
     }, true);
-    chip.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in box
-    chip.addEventListener("click", toggle);
+    chip.addEventListener("keydown", (e) => {
+        e.stopPropagation(), (hold = 0); // keep site hotkeys (YouTube: space = play) away from the button
+        if (e.key === "Enter" || e.key === " ") return e.preventDefault(), toggle();
+        if (e.key === "Escape" || (e.key === "Tab" && e.shiftKey)) return e.preventDefault(), box?.focus(); // back to the box
+        if (e.key === "Tab") { const n = nextTabbable(box); n && (e.preventDefault(), n.focus()); } // on to what followed the box
+    });
+    chip.addEventListener("mousedown", (e) => (e.preventDefault(), (hold = 0))); // mouse click keeps focus in the box
+    chip.addEventListener("click", (e) => e.detail && toggle()); // detail=0 → keyboard click, already handled
     let raf = 0;
     const reposition = () => (cancelAnimationFrame(raf), (raf = requestAnimationFrame(position)));
     addEventListener("scroll", reposition, true), addEventListener("resize", reposition);
