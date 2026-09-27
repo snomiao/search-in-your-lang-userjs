@@ -4,13 +4,14 @@
 // @name:ja            あなたの言語で検索
 // @namespace          snomiao@gmail.com
 // @author             snomiao@gmail.com
-// @version            0.2.0
+// @version            0.2.1
 // @description        [snolab] Press Tab in any search box (Google, YouTube, Wikipedia, Bing, Amazon, ...) to translate your keyword into your browser's primary language, Tab again to switch back. Uses Chrome's on-device Translator API when available.
 // @description:zh     [snolab] 在任意搜索框中按 Tab 把关键词翻译成浏览器首选语言，再按 Tab 切回原文。优先使用 Chrome 内置翻译 API。
 // @description:ja     [snolab] どの検索ボックスでも Tab でキーワードをブラウザの第一言語に翻訳、もう一度 Tab で元に戻す。Chrome 内蔵翻訳 API を優先使用。
 // @match              *://*/*
 // @run-at             document-idle
 // @noframes
+// @grant              unsafeWindow
 // @grant              GM_xmlhttpRequest
 // @grant              GM_getValue
 // @grant              GM_setValue
@@ -18,6 +19,8 @@
 // @connect            clients5.google.com
 // @connect            translate.googleapis.com
 // @license            MIT
+// @homepageURL        https://github.com/snomiao/search-in-your-lang-userjs
+// @supportURL         https://github.com/snomiao/search-in-your-lang-userjs/issues
 // ==/UserScript==
 
 (function main() {
