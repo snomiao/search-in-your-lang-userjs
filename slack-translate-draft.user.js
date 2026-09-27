@@ -4,10 +4,10 @@
 // @name:ja            Slack 下書き翻訳
 // @namespace          snomiao@gmail.com
 // @author             snomiao@gmail.com
-// @version            0.2.0
-// @description        [snolab] In Slack's message box, press Tab to reach a translate button and Enter/Space (or just Alt+T) to translate your draft into the channel's language, keeping bold/italic/code/links/mentions/emoji. Alt+T again to switch back. Uses Chrome's on-device Translator as fallback.
-// @description:zh     [snolab] 在 Slack 输入框按 Tab 聚焦翻译按钮再按 Enter/空格（或直接 Alt+T），把草稿翻译成频道所用语言，保留粗体/代码/链接/提及/表情；再按 Alt+T 切回原文。
-// @description:ja     [snolab] Slack の入力欄で Tab → 翻訳ボタンで Enter/スペース（または Alt+T）を押すと下書きをチャンネルの言語に翻訳（太字・コード・リンク・メンション・絵文字を保持）。もう一度 Alt+T で元に戻す。
+// @version            0.3.0
+// @description        [snolab] In Slack's message box, press Tab to reach a translate button; Space cycles your draft through the channel's languages then yours, Enter keeps it, Esc undoes. Bold/italic/code/links/mentions/emoji are kept. Uses Chrome's on-device Translator as fallback.
+// @description:zh     [snolab] 在 Slack 输入框按 Tab 聚焦翻译按钮，空格在频道语言和你的语言之间轮换草稿，回车确定，Esc 撤销；保留粗体/代码/链接/提及/表情。
+// @description:ja     [snolab] Slack の入力欄で Tab → 翻訳ボタン、スペースでチャンネルの言語と自分の言語を順に切り替え、Enter で確定、Esc で取り消し（太字・コード・リンク・メンション・絵文字を保持）。
 // @match              https://app.slack.com/*
 // @run-at             document-idle
 // @grant              unsafeWindow
@@ -31,9 +31,9 @@
     const myLangs = () => [...new Set([...navigator.languages, "en"].map(norm))];
     const langName = (c) => new Intl.DisplayNames([navigator.language], { type: "language" }).of(c) || c;
     typeof GM_registerMenuCommand === "function" &&
-        GM_registerMenuCommand("Set target language…", () => {
-            const v = prompt("Target language (ja, en, zh-CN…), empty = auto-detect from channel messages", gmGet("targetLang", ""));
-            v !== null && (GM_setValue("targetLang", v.trim()), cache.clear());
+        GM_registerMenuCommand("Set languages…", () => {
+            const v = prompt("Languages to cycle, comma separated (e.g. ja,en,zh-CN). Empty = channel languages, then your browser languages", gmGet("langs", ""));
+            v !== null && (GM_setValue("langs", v.trim()), GM_setValue("targetLang", ""), cache.clear());
         });
 
     // ---------- language detection (on-device) ----------
@@ -54,11 +54,14 @@
         }
         return Object.entries(votes).sort((a, b) => b[1] - a[1]).map(([l, n]) => [l, n / msgs.length]);
     };
-    const pickTarget = async (from) => {
-        const fixed = norm(gmGet("targetLang", ""));
-        if (fixed) return fixed !== from ? fixed : myLangs().find((l) => l !== from);
-        // mixed channel (en+ja) and I wrote en → ja; channel all in my draft's lang → my own lang (to double-check)
-        return (await channelLangs()).find(([l, share]) => l !== from && share >= 0.25)?.[0] || myLangs().find((l) => l !== from);
+    const fixedLangs = () => (gmGet("langs", gmGet("targetLang", "")) || "").split(/[\s,]+/).filter(Boolean).map(norm);
+    /** [null(original), ...channel langs, ...my langs] minus the draft's own lang; sep = index where "my langs" start */
+    const cycleOf = async (from) => {
+        const fixed = fixedLangs().filter((l) => l !== from);
+        if (fixed.length) return { cycle: [null, ...new Set(fixed)], sep: 0 };
+        const ch = (await channelLangs()).filter(([l, share]) => l !== from && share >= 0.25).map(([l]) => l);
+        const mine = myLangs().filter((l) => l !== from && !ch.includes(l));
+        return { cycle: [null, ...ch, ...mine], sep: ch.length && mine.length ? ch.length + 1 : 0 };
     };
 
     // ---------- translation of inline-HTML (tags + placeholders survive) ----------
@@ -135,50 +138,91 @@
         return out;
     };
     const cache = new Map();
-    const translateDelta = (ops) => {
-        const key = JSON.stringify(ops) + gmGet("targetLang", "");
-        if (cache.has(key)) return cache.get(key);
-        const job = (async () => {
-            const text = ops.map((o) => (typeof o.insert === "string" ? o.insert : " ")).join("").trim();
-            if (!text) return null;
-            const from = await detect(text).catch(() => "");
-            const to = await pickTarget(from);
-            if (!to) return null;
-            const lines = await Promise.all(toLines(ops).map(async ({ segs, nl }) => {
-                const keep = [], html = lineToHtml(segs, keep);
-                const skip = nl?.attributes?.["code-block"] || !segs.some((o) => isText(o) && o.insert.trim());
-                return [...(skip ? segs : htmlToSegs(await tr(html, to, from), keep)), ...(nl ? [nl] : [])];
-            }));
-            const out = lines.flat();
-            return { ops: out, to, text: out.map((o) => (typeof o.insert === "string" ? o.insert : "·")).join("").trim() };
-        })();
-        job.catch(() => cache.delete(key));
-        cache.set(key, job);
-        return job;
-    };
+    const memo = (k, f) => cache.get(k) ?? cache.set(k, f().catch((e) => (cache.delete(k), Promise.reject(e)))).get(k);
+    const plain = (ops) => ops.map((o) => (typeof o.insert === "string" ? o.insert : "·")).join("").trim();
+    // always from the original draft; null = came back unchanged
+    const translateDelta = (ops, to, from) => memo(to + ":" + JSON.stringify(ops), async () => {
+        const lines = await Promise.all(toLines(ops).map(async ({ segs, nl }) => {
+            const keep = [], html = lineToHtml(segs, keep);
+            const skip = nl?.attributes?.["code-block"] || !segs.some((o) => isText(o) && o.insert.trim());
+            return [...(skip ? segs : htmlToSegs(await tr(html, to, from), keep)), ...(nl ? [nl] : [])];
+        }));
+        const out = lines.flat();
+        return plain(out).toLowerCase() === plain(ops).toLowerCase() ? null : out;
+    });
 
     // ---------- chip UI: a real <button>, Tab from the composer lands on it ----------
+    //   collapsed: [Tab ⇥] japonais  今日デプロイ…
+    //   focused:   orig [ja] en | fr zh-CN ru   ␣ next ⏎ ok esc undo
+    //              japonais · 今日デプロイ…
     const h = (tag, className, textContent = "") => Object.assign(document.createElement(tag), { className, textContent });
     const host = Object.assign(document.createElement("div"), { id: "slack-translate-draft-chip" });
     Object.assign(host.style, { position: "fixed", zIndex: 2147483647, top: 0, left: 0, display: "none" });
     const root = host.attachShadow({ mode: "open" }), sheet = new CSSStyleSheet();
-    sheet.replaceSync(`.chip{font:13px/1.4 system-ui,sans-serif;display:flex;gap:6px;align-items:center;max-width:min(560px,80vw);padding:4px 8px;border-radius:8px;cursor:pointer;user-select:none;background:#1a1d21;color:#e8eaed;box-shadow:0 2px 8px #0005;border:1px solid #5f6368;text-align:left}
-        .chip:focus-visible{outline:2px solid #8ab4f8;outline-offset:1px}.k2,.chip:focus .k1{display:none}.chip:focus .k2{display:inline}.key{font-size:11px;padding:0 5px;border:1px solid #9aa0a6;border-radius:4px;color:#bdc1c6;white-space:nowrap}.lang{color:#8ab4f8;white-space:nowrap}.text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.busy .text{opacity:.6;font-style:italic}`);
+    sheet.replaceSync(`.chip{font:13px/1.4 system-ui,sans-serif;display:flex;flex-direction:column;gap:3px;max-width:min(560px,80vw);padding:4px 8px;border-radius:8px;cursor:pointer;user-select:none;background:#1a1d21;color:#e8eaed;box-shadow:0 2px 8px #0005;border:1px solid #5f6368;text-align:left}
+        .chip:focus-visible{outline:2px solid #8ab4f8;outline-offset:1px}.row{display:flex;gap:6px;align-items:center;min-width:0}
+        .pills{display:none;flex-wrap:wrap}.open .pills,.chip:hover .pills{display:flex}.pill{font-size:11px;padding:0 5px;border-radius:4px;border:1px solid transparent;color:#bdc1c6}
+        .pill.cur{border-color:#8ab4f8;background:#8ab4f833;color:#fff}.pill.wait{opacity:.5}.pill.skip,.pill.bad{text-decoration:line-through;opacity:.4}.sep{color:#5f6368}
+        .hint{display:none;margin-left:auto;font-size:11px;color:#9aa0a6;white-space:nowrap}.open .hint{display:inline}
+        .key{font-size:11px;padding:0 5px;border:1px solid #9aa0a6;border-radius:4px;color:#bdc1c6;white-space:nowrap}.open .key{display:none}
+        .lang{color:#8ab4f8;white-space:nowrap}.text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.busy .text{opacity:.6;font-style:italic}
+        .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}`);
     root.adoptedStyleSheets = [sheet];
-    const [chip, langEl, textEl] = [h("button", "chip"), h("span", "lang"), h("span", "text")];
-    chip.append(h("span", "key k1", "Tab ⇥ / Alt+T"), h("span", "key k2", "Enter ⏎"), langEl, textEl), root.append(chip);
+    const [chip, pills, langEl, textEl, live] = [h("button", "chip"), h("span", "row pills"), h("span", "lang"), h("span", "text"), h("span", "sr")];
+    const row2 = h("span", "row");
+    row2.append(h("span", "key", "Tab ⇥"), langEl, textEl);
+    chip.append(pills, row2), root.append(chip, live);
+    live.setAttribute("role", "status");
 
-    // ---------- state ----------
-    let quill = null, editor = null, original = null, result = null, pending = null, applied = false, dismissed = false, timer = 0, selfChange = false;
+    // ---------- state: cycle = [null(original), ...langs]; pos = index shown in the composer ----------
+    let quill = null, editor = null, original = null, from = "", cycle = [null], sep = 0, ready = false, pos = 0, dir = 1, entry = 0, status = {}, dismissed = false, timer = 0, selfChange = false, gen = 0;
     const quillOf = (el) => { const c = el?.closest?.(".ql-editor")?.parentElement; return (c?.wrappedJSObject || c)?.__quill; };
+    const isOpen = () => document.activeElement === host;
+    const dead = (l) => /skip|bad/.test(status[l]?.s);
+    const valueAt = (i) => (i ? status[cycle[i]]?.ops : original.ops);
+    const setDelta = (ops) => {
+        if (!ops) return;
+        selfChange = true;
+        try { quill.setContents(ops, "user"); } finally { selfChange = false; } // no setSelection: it would steal focus from the button
+    };
+    const want = (to) => {
+        if (!to || status[to]) return;
+        const g = gen, st = (status[to] = { s: "wait" });
+        translateDelta(original.ops, to, from).then((o) => ((st.s = o ? "ok" : "skip"), (st.ops = o), (st.text = o && plain(o))), (e) => (console.warn("[slack-translate-draft]", e), (st.s = "bad"))).then(() => {
+            if (g !== gen) return;
+            if (cycle[pos] === to) st.s === "ok" ? setDelta(st.ops) : isOpen() && go(pos + dir, dir); // landed on a dead lang: keep going
+            render();
+        });
+    };
+    const go = (i, d = 1) => {
+        const n = cycle.length;
+        i = ((i % n) + n) % n;
+        for (let k = 0; k < n && i && dead(cycle[i]); k++) i = (i + d + n) % n;
+        [pos, dir] = [i, d];
+        want(cycle[i]), want(cycle[(i + d + n) % n]); // current + prefetch next
+        setDelta(valueAt(i)), render();
+    };
     const render = () => {
-        const has = quill && quill.getText().trim();
-        const [lang, text] = !quill || dismissed || !has ? [] : applied ? ["↩", "original"] : result ? [langName(result.to), result.text] : pending ? ["", "translating…"] : [];
-        if (text === undefined) return (host.style.display = "none");
+        const text0 = original && plain(original.ops);
+        if (!quill || dismissed || !text0) return (host.style.display = "none");
+        const open = isOpen(), cur = cycle[pos], pv = pos ? cur : cycle.slice(1).find((l) => !dead(l));
+        if (ready && !pv) return (host.style.display = "none");
+        pv && !open && want(pv);
+        const st = status[pv] || {}, n = cycle.length - 1;
+        const [lang, text] = !ready ? ["", "translating…"]
+            : open && !pos ? ["original", text0]
+            : !open && pos ? [langName(cur) + " ✓", ""]
+            : [langName(pv), st.s === "ok" ? st.text : st.s === "wait" || !st.s ? "translating…" : "—"];
+        pills.replaceChildren(...cycle.flatMap((l, i) => [
+            ...(sep && i === sep ? [h("span", "sep", "|")] : []), // channel langs | my langs
+            Object.assign(h("span", `pill ${i === pos ? "cur" : ""} ${(l && status[l]?.s) || ""}`, l || "orig"), { title: l ? langName(l) : "original" }),
+        ]), h("span", "hint", "␣ next · ⏎ ok · esc undo"));
+        [...pills.querySelectorAll(".pill")].forEach((p, i) => (p.dataset.i = i));
         host.isConnected || document.documentElement.append(host);
-        chip.classList.toggle("busy", !result && !applied);
-        [langEl.textContent, textEl.textContent, host.style.display] = [lang, text, "block"];
-        chip.ariaLabel = applied ? "Restore original draft" : result ? `Translate draft to ${lang}: ${text}` : text;
+        chip.classList.toggle("open", open), chip.classList.toggle("busy", text === "translating…");
+        [langEl.textContent, textEl.textContent, host.style.display] = [lang, open ? (text && "· " + text) : text, "block"];
+        chip.ariaLabel = `${lang}${pos ? ` ${pos}/${n}` : ""}: ${text}`;
+        open && (live.textContent = chip.ariaLabel);
         position();
     };
     const position = () => {
@@ -187,14 +231,18 @@
         host.style.transform = `translate(${Math.round(Math.max(0, box.right - chip.offsetWidth))}px,${Math.round(Math.max(0, box.top - chip.offsetHeight - 6))}px)`;
     };
     const schedule = () => {
-        clearTimeout(timer), (result = null);
-        const ops = original.ops, job = quill.getText().trim() ? new Promise((ok) => (timer = setTimeout(ok, 700))).then(() => translateDelta(ops)) : null;
-        (pending = job), render();
-        job?.then((r) => pending === job && ((result = r), (pending = null), render()), (e) => pending === job && (console.warn("[slack-translate-draft]", e), (pending = null), render()));
+        clearTimeout(timer), gen++, ([cycle, sep, ready, pos, status] = [[null], 0, false, 0, {}]);
+        const g = gen, text = plain(original.ops);
+        if (!text) return render();
+        render();
+        timer = setTimeout(async () => {
+            const f = await detect(text).catch(() => ""), c = await cycleOf(f);
+            g === gen && ((from = f), (cycle = c.cycle), (sep = c.sep), (ready = true), render());
+        }, 700);
     };
     const onChange = () => {
         if (selfChange) return;
-        [original, applied, dismissed] = [quill.getContents(), false, false];
+        [original, dismissed] = [quill.getContents(), false];
         schedule();
     };
     const attach = (el) => {
@@ -202,24 +250,9 @@
         if (!q) return;
         if (q === quill) return render();
         quill?.off("text-change", onChange);
-        [quill, editor, original, applied, dismissed] = [q, el.closest(".ql-editor"), q.getContents(), false, false];
+        [quill, editor, original, dismissed] = [q, el.closest(".ql-editor"), q.getContents(), false];
         quill.on("text-change", onChange);
         schedule();
-    };
-    const setDelta = (ops) => {
-        selfChange = true;
-        try { quill.setContents(ops, "user"); quill.setSelection(quill.getLength(), 0, "user"); } finally { selfChange = false; }
-    };
-    const toggle = async () => {
-        if (!quill) return;
-        const q = quill;
-        if (applied) setDelta(original.ops), (applied = false);
-        else {
-            const r = result || (await pending?.catch(() => null));
-            if (q !== quill) return;
-            r && (setDelta(r.ops), (applied = true));
-        }
-        q.focus(), render(); // back in the composer: Enter now sends
     };
     const nextTabbable = (from) =>
         [...document.querySelectorAll("a[href],button,input,select,textarea,[tabindex],[contenteditable]")].find((el) =>
@@ -228,26 +261,31 @@
     const tabIsSlacks = () => document.querySelector("[data-qa=texty_autocomplete_menu]") || ["list", "code-block"].some((f) => quill.getFormat()[f]);
 
     // ---------- events ----------
-    document.addEventListener("focusin", (e) => (quillOf(e.target) ? attach(e.target) : null), true);
-    document.addEventListener("focusout", () => setTimeout(() => !quillOf(document.activeElement) && document.activeElement !== host && (host.style.display = "none"), 150), true);
+    document.addEventListener("focusin", (e) => (quillOf(e.target) ? attach(e.target) : e.target === host && render()), true);
+    document.addEventListener("focusout", () => setTimeout(() => (!quillOf(document.activeElement) && !isOpen() ? (host.style.display = "none") : render()), 150), true);
     window.addEventListener("keydown", (e) => {
         if (!quill || !quillOf(e.target) || e.isComposing) return;
         if (e.key === "Escape" && host.style.display !== "none") return (dismissed = true), render();
-        if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && host.style.display !== "none" && !tabIsSlacks())
-            return e.preventDefault(), e.stopImmediatePropagation(), chip.focus(); // Tab: composer → button
-        if (e.code !== "KeyT" || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-        e.preventDefault(), e.stopImmediatePropagation();
-        dismissed = false;
-        toggle();
+        if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || host.style.display === "none" || tabIsSlacks()) return;
+        e.preventDefault(), e.stopImmediatePropagation(), (entry = pos), chip.focus(); // Tab: composer → button
+        want(cycle[pos + 1] ?? cycle[1]);
     }, true);
     chip.addEventListener("keydown", (e) => {
         e.stopPropagation(); // keep Slack's global hotkeys away from the button
-        if (e.key === "Enter" || e.key === " ") return e.preventDefault(), toggle();
-        if (e.key === "Escape" || (e.key === "Tab" && e.shiftKey)) return e.preventDefault(), quill?.focus(); // back to the composer
-        if (e.key === "Tab") { const n = editor && nextTabbable(editor); n && (e.preventDefault(), n.focus()); }
+        const k = e.key, back = () => (e.preventDefault(), quill?.focus(), quill?.setSelection(quill.getLength(), 0, "silent")); // caret at end
+        if (k === " " || k === "ArrowRight") return e.preventDefault(), go(pos + 1, 1);
+        if (k === "ArrowLeft") return e.preventDefault(), go(pos - 1, -1);
+        if (/^\d$/.test(k) && +k < cycle.length) return e.preventDefault(), go(+k);
+        if (k === "Enter" || (k === "Tab" && e.shiftKey)) return back(); // keep current draft; Enter again sends
+        if (k === "Escape") return (pos = entry), setDelta(valueAt(entry) ?? original.ops), back(); // undo this round
+        if (k === "Tab") { const n = editor && nextTabbable(editor); n && (e.preventDefault(), n.focus()); }
     });
-    chip.addEventListener("mousedown", (e) => e.preventDefault()); // mouse click keeps focus in composer
-    chip.addEventListener("click", (e) => e.detail && toggle()); // detail=0 → keyboard click, already handled
+    chip.addEventListener("mousedown", (e) => e.preventDefault()); // mouse keeps focus in composer
+    chip.addEventListener("click", (e) => {
+        if (!e.detail) return; // keyboard click, handled above
+        const i = e.composedPath().find((x) => x.dataset?.i)?.dataset.i;
+        i != null ? go(+i) : go(pos + 1, 1);
+    });
     addEventListener("resize", () => requestAnimationFrame(position));
     quillOf(document.activeElement) && attach(document.activeElement);
 })();
