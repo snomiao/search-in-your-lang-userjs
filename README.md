@@ -25,3 +25,12 @@ Works on Google, YouTube, Wikipedia, Bing, Amazon, DuckDuckGo, and most other si
 It uses Chrome's built-in on-device `Translator` + `LanguageDetector` APIs when the language pair is available (Chrome 138+). Otherwise it falls back to Google Translate's public endpoints through `GM_xmlhttpRequest`. Results are cached per query.
 
 Based on [google-bilingual-search-enja](https://gist.github.com/snomiao/ecee0271ac7599d526aaa210293e3f43).
+
+## Slack Translate Draft
+
+[`slack-translate-draft.user.js`](./slack-translate-draft.user.js) is a separate script for Slack's message box.
+
+- **Alt+T**: translate your draft. Press it again to restore the original.
+- **Esc**: hide the preview chip.
+- **Formatting is kept.** Bold, italic, strike, lists and quotes stay as they are. Inline code, code blocks, links, @mentions, #channels and emoji are passed through untouched.
+- **Target language**: the most common language among the channel's visible messages that differs from your draft, detected on-device. If the channel is all in your draft's language, the target is your own browser language instead. You can override it from the userscript menu.
