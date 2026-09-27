@@ -22,6 +22,6 @@ Works on Google, YouTube, Wikipedia, Bing, Amazon, DuckDuckGo, and most other si
 
 ## Translation
 
-The script uses Google Translate's public endpoints through `GM_xmlhttpRequest`, so CORS doesn't block it. If those fail, it falls back to MyMemory. Results are cached per query.
+It uses Chrome's built-in on-device `Translator` + `LanguageDetector` APIs when the language pair is available (Chrome 138+). Otherwise it falls back to Google Translate's public endpoints through `GM_xmlhttpRequest`. Results are cached per query.
 
 Based on [google-bilingual-search-enja](https://gist.github.com/snomiao/ecee0271ac7599d526aaa210293e3f43).

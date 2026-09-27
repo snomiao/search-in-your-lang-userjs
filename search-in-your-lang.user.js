@@ -4,421 +4,168 @@
 // @name:ja            あなたの言語で検索
 // @namespace          snomiao@gmail.com
 // @author             snomiao@gmail.com
-// @version            0.1.0
-// @description        [snolab] Press Tab in any search box (Google, YouTube, Wikipedia, Bing, DuckDuckGo, Amazon, ...) to translate your keyword into your browser's primary language. Press Tab again to switch back.
-// @description:zh     [snolab] 在任意搜索框（谷歌、YouTube、维基百科、Bing……）中按 Tab，即可把搜索关键词翻译成浏览器首选语言；再按一次 Tab 切回原文。
-// @description:ja     [snolab] どの検索ボックス（Google、YouTube、Wikipedia、Bing など）でも Tab キーで検索キーワードをブラウザの第一言語に翻訳。もう一度 Tab で元に戻す。
+// @version            0.2.0
+// @description        [snolab] Press Tab in any search box (Google, YouTube, Wikipedia, Bing, Amazon, ...) to translate your keyword into your browser's primary language, Tab again to switch back. Uses Chrome's on-device Translator API when available.
+// @description:zh     [snolab] 在任意搜索框中按 Tab 把关键词翻译成浏览器首选语言，再按 Tab 切回原文。优先使用 Chrome 内置翻译 API。
+// @description:ja     [snolab] どの検索ボックスでも Tab でキーワードをブラウザの第一言語に翻訳、もう一度 Tab で元に戻す。Chrome 内蔵翻訳 API を優先使用。
 // @match              *://*/*
 // @run-at             document-idle
+// @noframes
 // @grant              GM_xmlhttpRequest
-// @grant              GM.xmlHttpRequest
 // @grant              GM_getValue
 // @grant              GM_setValue
 // @grant              GM_registerMenuCommand
 // @connect            clients5.google.com
 // @connect            translate.googleapis.com
-// @connect            api.mymemory.translated.net
 // @license            MIT
-// @noframes
 // ==/UserScript==
 
 (function main() {
-    "use strict";
-
-    const DEBOUNCE_MS = 250;
-    const HOST_ID = "search-in-your-lang-chip";
-
-    // ---------- settings ----------
+    const W = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
     const gmGet = (k, d) => (typeof GM_getValue === "function" ? GM_getValue(k, d) : d);
-    const gmSet = (k, v) => typeof GM_setValue === "function" && GM_setValue(k, v);
-
-    /** Google-style language code: "ja-JP" -> "ja", "zh-TW"/"zh-Hant" -> "zh-TW", "zh"/"zh-CN" -> "zh-CN" */
-    function normalizeLang(tag) {
-        const t = String(tag || "").trim();
-        if (!t) return "";
-        const [base, ...rest] = t.split(/[-_]/);
-        const b = base.toLowerCase();
-        if (b === "zh") return rest.some((r) => /^(tw|hk|mo|hant)$/i.test(r)) ? "zh-TW" : "zh-CN";
-        if (b === "iw") return "he";
-        return b;
-    }
-
-    /** Ordered target languages: override (if set), browser languages, then English. */
-    function targetLangs() {
-        const override = gmGet("targetLang", "");
-        const list = [override, ...(navigator.languages || [navigator.language]), "en"]
-            .map(normalizeLang)
-            .filter(Boolean);
-        return [...new Set(list)];
-    }
-
-    const langName = (code) => {
-        try {
-            return new Intl.DisplayNames([navigator.language], { type: "language" }).of(code) || code;
-        } catch {
-            return code;
-        }
+    const norm = (t = "") => {
+        const [b, ...r] = t.toLowerCase().split(/[-_]/);
+        return b === "zh" ? (r.some((x) => /^(tw|hk|mo|hant)$/.test(x)) ? "zh-TW" : "zh-CN") : b;
     };
-
-    if (typeof GM_registerMenuCommand === "function") {
+    const langs = () => [...new Set([gmGet("targetLang", ""), ...navigator.languages, "en"].filter(Boolean).map(norm))];
+    const langName = (c) => new Intl.DisplayNames([navigator.language], { type: "language" }).of(c) || c;
+    const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+    typeof GM_registerMenuCommand === "function" &&
         GM_registerMenuCommand("Set target language…", () => {
-            const cur = gmGet("targetLang", "") || "";
-            const v = prompt(
-                `Target language code (e.g. ja, en, zh-CN, fr).\nLeave empty to follow your browser (${navigator.languages.join(", ")}).`,
-                cur,
-            );
-            if (v === null) return;
-            gmSet("targetLang", v.trim());
-            cache.clear();
+            const v = prompt(`Target language (ja, en, zh-CN…), empty = browser (${navigator.languages})`, gmGet("targetLang", ""));
+            v !== null && (GM_setValue("targetLang", v.trim()), cache.clear());
         });
-    }
 
-    // ---------- translation ----------
-    function httpGetJson(url) {
-        const gmx =
-            (typeof GM_xmlhttpRequest === "function" && GM_xmlhttpRequest) ||
-            (typeof GM !== "undefined" && GM.xmlHttpRequest);
-        if (!gmx) return fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))));
-        return new Promise((resolve, reject) =>
-            gmx({
-                method: "GET",
-                url,
-                timeout: 8000,
-                onload: (r) => {
-                    if (r.status < 200 || r.status >= 300) return reject(new Error(`HTTP ${r.status}`));
-                    try {
-                        resolve(JSON.parse(r.responseText));
-                    } catch (e) {
-                        reject(e);
-                    }
-                },
-                onerror: reject,
-                ontimeout: () => reject(new Error("timeout")),
-            }),
-        );
-    }
-
-    /** Each provider returns { text, from } where `from` is the detected source language (may be ""). */
+    // translate: Chrome built-in Translator first (on-device), then Google endpoints
+    const getJson = (url) =>
+        typeof GM_xmlhttpRequest !== "function"
+            ? fetch(url).then((r) => r.json())
+            : new Promise((ok, ng) =>
+                  GM_xmlhttpRequest({ url, timeout: 8e3, onerror: ng, ontimeout: ng, onload: (r) => { try { ok(JSON.parse(r.responseText)); } catch (e) { ng(e); } } }));
+    let detector;
+    // short keywords detect poorly ("cat videos" → la 79%, en 10%), so prefer a candidate among the user's langs
+    const detect = async (q) => {
+        const cands = (await (await (detector ??= W.LanguageDetector?.create().catch(() => null)))?.detect(q)) || [];
+        return norm((cands.find((c) => c.confidence > 0.05 && langs().includes(norm(c.detectedLanguage))) || cands[0])?.detectedLanguage);
+    };
+    const translators = {};
     const providers = [
-        async (q, to) => {
-            const u = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${to}&q=${encodeURIComponent(q)}`;
-            const d = await httpGetJson(u);
-            // shape: [["translated","srcLang"]] or ["translated"]
-            const first = Array.isArray(d) ? d[0] : null;
-            if (Array.isArray(first)) return { text: first[0], from: first[1] || "" };
-            if (typeof first === "string") return { text: first, from: "" };
-            throw new Error("bad response");
+        async (q, to, from) => {
+            if (!W.Translator || !from || from === "und") throw 0;
+            const key = from + ">" + to;
+            return { text: await (await (translators[key] ??= W.Translator.create({ sourceLanguage: from, targetLanguage: to }).catch((e) => (delete translators[key], Promise.reject(e))))).translate(q), from };
         },
         async (q, to) => {
-            const u = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${to}&dt=t&q=${encodeURIComponent(q)}`;
-            const d = await httpGetJson(u);
-            return { text: d[0].map((s) => s[0]).join(""), from: d[2] || "" };
+            const [[text, from]] = await getJson(`https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${to}&q=${encodeURIComponent(q)}`);
+            return { text, from: norm(from) };
         },
         async (q, to) => {
-            const u = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=autodetect|${to}`;
-            const d = await httpGetJson(u);
-            if (d.responseStatus !== 200) throw new Error(d.responseDetails);
-            return { text: d.responseData.translatedText, from: d.responseData.detectedLanguage || "" };
+            const d = await getJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${to}&dt=t&q=${encodeURIComponent(q)}`);
+            return { text: d[0].map((s) => s[0]).join(""), from: norm(d[2]) };
         },
     ];
-
-    async function translateRaw(q, to) {
-        let err;
-        for (const p of providers) {
-            try {
-                const r = await p(q, to);
-                if (r?.text) return { ...r, from: normalizeLang(r.from) };
-            } catch (e) {
-                err = e;
-            }
-        }
-        throw err || new Error("translation failed");
-    }
-
-    const cache = new Map();
-    /** Translate into the first preferred language that isn't the query's own language. */
-    function translate(q) {
-        if (cache.has(q)) return cache.get(q);
-        const job = (async () => {
-            const langs = targetLangs();
-            let r = await translateRaw(q, langs[0]);
-            let to = langs[0];
-            if (r.from === to || same(r.text, q)) {
-                // Already written in the primary language: offer the next one instead (usually English).
-                to = langs.find((l) => l !== r.from && l !== langs[0]);
-                if (!to) return null;
-                r = await translateRaw(q, to);
-            }
-            if (!r.text || same(r.text, q)) return null;
-            return { text: r.text, to };
-        })();
-        job.catch(() => cache.delete(q));
-        cache.set(q, job);
-        return job;
-    }
-
-    const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
-
-    // ---------- search box detection ----------
-    const SEARCH_NAMES = new Set([
-        "q", "query", "search", "search_query", "searchtext", "search_text", "keyword", "keywords",
-        "field-keywords", "wd", "word", "kw", "k", "p", "s", "term", "terms", "search-input",
-    ]);
-    const SEARCH_HINT = /search|query|keyword|検索|搜索|搜尋|검색|suche|recherche|buscar|pesquis|cerca|поиск|zoek/i;
-
-    function isSearchBox(el) {
-        if (!el || el.disabled || el.readOnly) return false;
-        const tag = el.tagName;
-        if (tag === "TEXTAREA") {
-            // Google/Bing use a <textarea> as their main search box
-            if (!(SEARCH_NAMES.has((el.name || "").toLowerCase()) || el.closest?.("form[role=search], [role=search], form[action*=search]")))
-                return false;
-        } else if (tag === "INPUT") {
-            const type = (el.getAttribute("type") || "text").toLowerCase();
-            if (type === "search") return true;
-            if (type !== "text") return false;
-        } else return false;
-
-        const role = el.getAttribute("role") || "";
-        if (role === "searchbox") return true;
-        if (el.getAttribute("enterkeyhint") === "search") return true;
-        if (SEARCH_NAMES.has((el.name || "").toLowerCase())) return true;
-        const hints = [el.id, el.name, el.className, el.placeholder, el.getAttribute("aria-label"), el.title].join(" ");
-        if (SEARCH_HINT.test(hints)) return true;
-        const form = el.form || el.closest?.("form");
-        if (el.closest?.("[role=search]")) return true;
-        if (form && (SEARCH_HINT.test(form.getAttribute("action") || "") || SEARCH_HINT.test(form.id + " " + form.className)))
-            return true;
-        return false;
-    }
-
-    function setNativeValue(el, value) {
-        let proto = el;
-        let desc;
-        while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "value"))) proto = Object.getPrototypeOf(proto);
-        desc?.set ? desc.set.call(el, value) : (el.value = value);
-        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        try {
-            el.setSelectionRange(value.length, value.length);
-        } catch {}
-    }
-
-    // ---------- UI chip (built without innerHTML so it works under Trusted Types, e.g. YouTube) ----------
-    const host = document.createElement("div");
-    host.id = HOST_ID;
-    Object.assign(host.style, { position: "fixed", zIndex: "2147483647", top: "0", left: "0", display: "none" });
-    const root = host.attachShadow({ mode: "open" });
-    const css = `
-        .chip { font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; gap: 6px; align-items: center;
-            max-width: min(520px, 90vw); padding: 4px 8px; border-radius: 8px; cursor: pointer; user-select: none;
-            background: #202124; color: #e8eaed; box-shadow: 0 2px 8px rgba(0,0,0,.3); border: 1px solid #5f6368; }
-        .key { flex: none; font-size: 11px; padding: 0 5px; border: 1px solid #9aa0a6; border-radius: 4px; color: #bdc1c6; }
-        .lang { flex: none; color: #8ab4f8; }
-        .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .chip.busy .text { opacity: .6; font-style: italic; }
-        .chip.err { border-color: #f28b82; }
-    `;
-    try {
-        const sheet = new CSSStyleSheet();
-        sheet.replaceSync(css);
-        root.adoptedStyleSheets = [sheet];
-    } catch {
-        const style = document.createElement("style");
-        style.textContent = css;
-        root.appendChild(style);
-    }
-    const chip = document.createElement("div");
-    chip.className = "chip";
-    const keyEl = Object.assign(document.createElement("span"), { className: "key", textContent: "Tab ⇥" });
-    const langEl = Object.assign(document.createElement("span"), { className: "lang" });
-    const textEl = Object.assign(document.createElement("span"), { className: "text" });
-    chip.append(keyEl, langEl, textEl);
-    root.appendChild(chip);
-    const mountHost = () => host.isConnected || document.documentElement.appendChild(host);
-
-    // ---------- state ----------
-    /** @type {HTMLInputElement|HTMLTextAreaElement|null} */
-    let box = null;
-    let original = ""; // what the user typed
-    let result = null; // { text, to } | null
-    let pending = null; // Promise of current translation
-    let applied = false; // box currently shows the translation
-    let dismissed = false; // user hit Escape
-    let failed = false;
-    let timer = 0;
-    let selfInput = false;
-    const bound = new WeakSet();
-
-    function render() {
-        const text = box && box.value.trim();
-        if (!box || dismissed || !text || !box.isConnected) return (host.style.display = "none");
-        mountHost();
-        chip.classList.toggle("busy", !!pending && !result);
-        chip.classList.toggle("err", failed);
-        if (applied) {
-            langEl.textContent = "↩";
-            textEl.textContent = original;
-        } else if (result) {
-            langEl.textContent = langName(result.to);
-            textEl.textContent = result.text;
-        } else if (failed) {
-            langEl.textContent = "";
-            textEl.textContent = "translation unavailable";
-        } else if (pending) {
-            langEl.textContent = "";
-            textEl.textContent = "translating…";
-        } else return (host.style.display = "none");
-        host.style.display = "block";
-        position();
-    }
-
-    function position() {
-        if (!box || host.style.display === "none") return;
-        const r = box.getBoundingClientRect();
-        const h = chip.offsetHeight || 28;
-        const w = chip.offsetWidth || 200;
-        const below = r.bottom + 4 + h <= innerHeight;
-        const top = below ? r.bottom + 4 : Math.max(0, r.top - h - 4);
-        const left = Math.min(Math.max(0, r.right - w), Math.max(0, innerWidth - w - 4));
-        host.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
-    }
-
-    function schedule() {
-        clearTimeout(timer);
-        result = null;
-        failed = false;
-        pending = null;
-        const q = original.trim();
-        if (!q) return render();
-        const job = new Promise((res) => (timer = setTimeout(res, DEBOUNCE_MS))).then(() => translate(q));
-        pending = job;
-        render();
-        job.then(
-            (r) => {
-                if (pending !== job) return;
-                result = r;
-                pending = null;
-                render();
-            },
-            (e) => {
-                if (pending !== job) return;
-                console.warn("[search-in-your-lang]", e);
-                failed = true;
-                pending = null;
-                render();
-            },
-        );
-    }
-
-    function attach(el) {
-        if (box === el) return;
-        box = el;
-        original = el.value;
-        applied = false;
-        dismissed = false;
-        if (!bound.has(el)) {
-            bound.add(el);
-            el.addEventListener("input", () => {
-                if (selfInput || el !== box) return;
-                original = el.value;
-                applied = false;
-                dismissed = false;
-                schedule();
-            });
-        }
-        schedule();
-    }
-
-    function detach() {
-        clearTimeout(timer);
-        box = null;
-        pending = null;
-        render();
-    }
-
-    async function toggle() {
-        if (!box) return;
-        const el = box;
-        if (applied) {
-            apply(el, original);
-            applied = false;
-            return render();
-        }
-        const r = result || (await pending?.catch(() => null));
-        if (!r || el !== box) return;
-        apply(el, r.text);
-        applied = true;
-        render();
-    }
-
-    function apply(el, value) {
-        selfInput = true;
-        try {
-            setNativeValue(el, value);
-        } finally {
-            selfInput = false;
-        }
-        el.focus();
-    }
-
-    // ---------- events ----------
-    const deepTarget = (e) => (e.composedPath?.()[0]) || e.target;
-
-    document.addEventListener(
-        "focusin",
-        (e) => {
-            const el = deepTarget(e);
-            if (isSearchBox(el)) attach(el);
-            else if (el !== box && !host.contains(el)) detach();
-        },
-        true,
-    );
-    document.addEventListener(
-        "focusout",
-        (e) => {
-            if (deepTarget(e) !== box) return;
-            // Some sites (YouTube) re-focus the same box right away; only hide if focus really moved.
-            setTimeout(() => {
-                const a = document.activeElement;
-                const deep = a?.shadowRoot?.activeElement || a;
-                if (box && deep !== box) detach();
-            }, 150);
-        },
-        true,
-    );
-
-    window.addEventListener(
-        "keydown",
-        (e) => {
-            if (!box || deepTarget(e) !== box || e.isComposing || e.keyCode === 229) return;
-            if (e.key === "Escape" && host.style.display !== "none") {
-                dismissed = true;
-                render();
-                return; // let the site also handle Escape (e.g. close its suggestion list)
-            }
-            if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-            if (dismissed || !box.value.trim()) return; // normal Tab: move focus
-            if (!applied && !result && !pending) return;
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            toggle();
-        },
-        true,
-    );
-
-    chip.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in the search box
-    chip.addEventListener("click", () => toggle());
-
-    let raf = 0;
-    const reposition = () => {
-        cancelAnimationFrame(raf);
-        raf = requestAnimationFrame(position);
+    const tr = async (q, to, from) => {
+        for (const p of providers) try { const r = await p(q, to, from); if (r.text) return r; } catch {}
+        throw new Error("translate failed");
     };
-    window.addEventListener("scroll", reposition, true);
-    window.addEventListener("resize", reposition);
+    const cache = new Map();
+    const translate = (q) =>
+        cache.get(q) ??
+        cache.set(q, (async () => {
+            const [primary, ...rest] = langs();
+            const from = await detect(q).catch(() => "");
+            // already in primary lang → offer next preferred lang (usually en)
+            const to = from === primary ? rest.find((l) => l !== from) : primary;
+            let r = to && { ...(await tr(q, to, from)), to };
+            // no local detector: learn source lang from the remote result, retry if it was already primary
+            const to2 = r && !from && (r.from === primary || same(r.text, q)) && rest.find((l) => l !== r.from);
+            if (to2) r = { ...(await tr(q, to2, r.from)), to: to2 };
+            return r && !same(r.text, q) ? r : null;
+        })().catch((e) => (cache.delete(q), Promise.reject(e)))).get(q);
 
-    // A search box may already be focused (autofocus on google.com / wikipedia.org)
-    const initial = document.activeElement?.shadowRoot?.activeElement || document.activeElement;
-    if (isSearchBox(initial)) attach(initial);
+    // search box detection
+    const NAMES = /^(q|query|search|search_query|searchtext|keywords?|field-keywords|wd|word|kw|k|p|s|terms?|search-input)$/i;
+    const HINT = /search|query|keyword|検索|搜索|搜尋|검색|suche|recherche|buscar|pesquis|cerca|поиск|zoek/i;
+    const isSearchBox = (el) => {
+        if (!el || el.disabled || el.readOnly || !/^(INPUT|TEXTAREA)$/.test(el.tagName)) return false;
+        const type = (el.getAttribute("type") || "text").toLowerCase(), form = el.closest("form");
+        if (el.tagName === "INPUT" && type === "search") return true;
+        if (el.tagName === "INPUT" ? type !== "text" : !NAMES.test(el.name) && !el.closest("[role=search], form[action*=search]")) return false;
+        return el.role === "searchbox" || el.enterKeyHint === "search" || NAMES.test(el.name) || !!el.closest("[role=search]") ||
+            HINT.test([el.id, el.name, el.className, el.placeholder, el.ariaLabel, el.title, form?.getAttribute("action"), form?.id, form?.className].join(" "));
+    };
+    const setValue = (el, v) => {
+        let p = el, d;
+        while (p && !(d = Object.getOwnPropertyDescriptor(p, "value"))) p = Object.getPrototypeOf(p);
+        d.set.call(el, v); // native setter so React/Vue notice
+        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        el.setSelectionRange?.(v.length, v.length);
+    };
+
+    // chip UI (no innerHTML: YouTube enforces Trusted Types)
+    const h = (tag, className, textContent = "") => Object.assign(document.createElement(tag), { className, textContent });
+    const host = Object.assign(document.createElement("div"), { id: "search-in-your-lang-chip" });
+    Object.assign(host.style, { position: "fixed", zIndex: 2147483647, top: 0, left: 0, display: "none" });
+    const root = host.attachShadow({ mode: "open" }), sheet = new CSSStyleSheet();
+    sheet.replaceSync(`.chip{font:13px/1.4 system-ui,sans-serif;display:flex;gap:6px;align-items:center;max-width:min(520px,90vw);padding:4px 8px;border-radius:8px;cursor:pointer;user-select:none;background:#202124;color:#e8eaed;box-shadow:0 2px 8px #0005;border:1px solid #5f6368}
+        .key{font-size:11px;padding:0 5px;border:1px solid #9aa0a6;border-radius:4px;color:#bdc1c6}.lang{color:#8ab4f8}.text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.busy .text{opacity:.6;font-style:italic}`);
+    root.adoptedStyleSheets = [sheet];
+    const [chip, langEl, textEl] = [h("div", "chip"), h("span", "lang"), h("span", "text")];
+    chip.append(h("span", "key", "Tab ⇥"), langEl, textEl), root.append(chip);
+
+    // state
+    let box = null, original = "", result = null, pending = null, applied = false, dismissed = false, timer = 0, selfInput = false;
+    const shown = () => host.style.display !== "none";
+    const render = () => {
+        const [lang, text] = !box || dismissed || !box.value.trim() ? [] : applied ? ["↩", original] : result ? [langName(result.to), result.text] : pending ? ["", "translating…"] : [];
+        if (text === undefined) return (host.style.display = "none");
+        host.isConnected || document.documentElement.append(host);
+        chip.classList.toggle("busy", !result && !applied);
+        [langEl.textContent, textEl.textContent, host.style.display] = [lang, text, "block"];
+        position();
+    };
+    const position = () => {
+        if (!box || !shown()) return;
+        const r = box.getBoundingClientRect(), { offsetWidth: w, offsetHeight: ch } = chip;
+        const top = r.bottom + 4 + ch <= innerHeight ? r.bottom + 4 : Math.max(0, r.top - ch - 4);
+        host.style.transform = `translate(${Math.round(Math.max(0, Math.min(r.right - w, innerWidth - w - 4)))}px,${Math.round(top)}px)`;
+    };
+    const schedule = () => {
+        clearTimeout(timer), (result = null);
+        const q = original.trim(), job = q ? new Promise((ok) => (timer = setTimeout(ok, 250))).then(() => translate(q)) : null;
+        (pending = job), render();
+        job?.then((r) => pending === job && ((result = r), (pending = null), render()), (e) => pending === job && (console.warn("[search-in-your-lang]", e), (pending = null), render()));
+    };
+    const bound = new WeakSet();
+    const attach = (el) => {
+        if (box === el) return;
+        [box, original, applied, dismissed] = [el, el.value, false, false];
+        bound.has(el) || (bound.add(el), el.addEventListener("input", () => !selfInput && el === box && (([original, applied, dismissed] = [el.value, false, false]), schedule())));
+        schedule();
+    };
+    const detach = () => (clearTimeout(timer), (box = pending = null), render());
+    const apply = (v) => { selfInput = true; try { setValue(box, v); } finally { selfInput = false; } box.focus(); };
+    const toggle = async () => {
+        if (applied) return apply(original), (applied = false), render();
+        const el = box, r = result || (await pending?.catch(() => null));
+        if (r && el === box) apply(r.text), (applied = true), render();
+    };
+
+    // events
+    const deep = (e) => e.composedPath?.()[0] || e.target;
+    const active = () => document.activeElement?.shadowRoot?.activeElement || document.activeElement;
+    document.addEventListener("focusin", (e) => (isSearchBox(deep(e)) ? attach(deep(e)) : deep(e) !== box && detach()), true);
+    document.addEventListener("focusout", (e) => deep(e) === box && setTimeout(() => box && active() !== box && detach(), 150), true);
+    window.addEventListener("keydown", (e) => {
+        if (!box || deep(e) !== box || e.isComposing || e.keyCode === 229) return;
+        if (e.key === "Escape" && shown()) return (dismissed = true), render(); // site still gets Escape
+        if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || !shown()) return;
+        e.preventDefault(), e.stopImmediatePropagation(), toggle();
+    }, true);
+    chip.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in box
+    chip.addEventListener("click", toggle);
+    let raf = 0;
+    const reposition = () => (cancelAnimationFrame(raf), (raf = requestAnimationFrame(position)));
+    addEventListener("scroll", reposition, true), addEventListener("resize", reposition);
+    isSearchBox(active()) && attach(active()); // autofocused box
 })();
