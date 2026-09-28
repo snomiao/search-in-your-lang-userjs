@@ -4,7 +4,7 @@
 // @name:ja            Slack 下書き翻訳
 // @namespace          snomiao@gmail.com
 // @author             snomiao@gmail.com
-// @version            0.3.0
+// @version            0.3.1
 // @description        [snolab] In Slack's message box, press Tab to reach a translate button; Space cycles your draft through the channel's languages then yours, Enter keeps it, Esc undoes. Bold/italic/code/links/mentions/emoji are kept. Uses Chrome's on-device Translator as fallback.
 // @description:zh     [snolab] 在 Slack 输入框按 Tab 聚焦翻译按钮，空格在频道语言和你的语言之间轮换草稿，回车确定，Esc 撤销；保留粗体/代码/链接/提及/表情。
 // @description:ja     [snolab] Slack の入力欄で Tab → 翻訳ボタン、スペースでチャンネルの言語と自分の言語を順に切り替え、Enter で確定、Esc で取り消し（太字・コード・リンク・メンション・絵文字を保持）。
@@ -237,7 +237,7 @@
         render();
         timer = setTimeout(async () => {
             const f = await detect(text).catch(() => ""), c = await cycleOf(f);
-            g === gen && ((from = f), (cycle = c.cycle), (sep = c.sep), (ready = true), render());
+            g === gen && ((from = f), (cycle = c.cycle), (sep = c.sep), (ready = true), isOpen() && !pos ? go(1) : render()); // tabbed in before langs were known
         }, 700);
     };
     const onChange = () => {
@@ -267,8 +267,7 @@
         if (!quill || !quillOf(e.target) || e.isComposing) return;
         if (e.key === "Escape" && host.style.display !== "none") return (dismissed = true), render();
         if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || host.style.display === "none" || tabIsSlacks()) return;
-        e.preventDefault(), e.stopImmediatePropagation(), (entry = pos), chip.focus(); // Tab: composer → button
-        want(cycle[pos + 1] ?? cycle[1]);
+        e.preventDefault(), e.stopImmediatePropagation(), (entry = pos), chip.focus(), go(pos + 1, 1); // Tab: composer → button, already on the next lang
     }, true);
     chip.addEventListener("keydown", (e) => {
         e.stopPropagation(); // keep Slack's global hotkeys away from the button

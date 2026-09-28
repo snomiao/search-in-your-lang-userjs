@@ -4,7 +4,7 @@
 // @name:ja            あなたの言語で検索
 // @namespace          snomiao@gmail.com
 // @author             snomiao@gmail.com
-// @version            0.4.0
+// @version            0.4.1
 // @description        [snolab] Press Tab in any search box (Google, YouTube, Wikipedia, Bing, Amazon, ...) to reach a translate button; Space cycles your keyword through your browser languages, Enter keeps it, Esc undoes. Uses Chrome's on-device Translator API when available.
 // @description:zh     [snolab] 在任意搜索框中按 Tab 聚焦翻译按钮，空格在浏览器语言之间轮换关键词，回车确定，Esc 撤销。优先使用 Chrome 内置翻译 API。
 // @description:ja     [snolab] どの検索ボックスでも Tab で翻訳ボタンへ移動、スペースでブラウザの言語を順に切り替え、Enter で確定、Esc で取り消し。Chrome 内蔵翻訳 API を優先使用。
@@ -176,7 +176,8 @@
         const q = original;
         if (!q.trim()) return render();
         render();
-        timer = setTimeout(async () => { const c = await cycleOf(q.trim()); q === original && ((cycle = c), (ready = true), render()); }, 250);
+        // if the user tabbed in before langs were known, land on the first lang now
+        timer = setTimeout(async () => { const c = await cycleOf(q.trim()); q === original && ((cycle = c), (ready = true), isOpen() && !pos ? go(1) : render()); }, 250);
     };
     const bound = new WeakSet();
     const attach = (el) => {
@@ -208,8 +209,7 @@
         if (!box || deep(e) !== box || e.isComposing || e.keyCode === 229) return;
         if (e.key === "Escape" && host.style.display !== "none") return (dismissed = true), render(); // site still gets Escape
         if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || host.style.display === "none") return;
-        e.preventDefault(), e.stopImmediatePropagation(), (hold = performance.now() + 300), (entry = pos), chip.focus(); // Tab: box → button
-        want(cycle[pos + 1] ?? cycle[1]);
+        e.preventDefault(), e.stopImmediatePropagation(), (hold = performance.now() + 300), (entry = pos), chip.focus(), go(pos + 1, 1); // Tab: box → button, already on the next lang
     }, true);
     chip.addEventListener("keydown", (e) => {
         e.stopPropagation(), (hold = 0); // keep site hotkeys (YouTube: space = play) away from the button

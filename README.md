@@ -8,7 +8,7 @@ Works on Google, YouTube, Wikipedia, Bing, Amazon, DuckDuckGo, and most other si
 
 1. Install a userscript manager (Tampermonkey or Violentmonkey), then install it from [Greasy Fork](https://greasyfork.org/scripts/597648-search-in-your-language).
 2. Type in a search box. A small chip appears, for example `Tab ⇥ Français Vidéos de chat`.
-3. Press **Tab** to focus it. It opens a language bar, `orig [fr] ja zh-CN ru`, and the search box updates as you move:
+3. Press **Tab** to focus it. It opens a language bar, `orig [fr] ja zh-CN ru`, already on your first language, and the search box shows it. **Tab**, **Enter** is the quickest way to translate and search. The box updates as you move:
 
    | Key on the button | Does | Focus |
    |---|---|---|
@@ -39,7 +39,7 @@ Based on [google-bilingual-search-enja](https://gist.github.com/snomiao/ecee0271
 
 [`slack-translate-draft.user.js`](./slack-translate-draft.user.js) is a separate script for Slack's message box. Install it from [Greasy Fork](https://greasyfork.org/scripts/597657-slack-translate-draft).
 
-- **Tab** in the message box focuses the translate button. The keys are the same as the search script's: **Space**/**←**/**→**/digits cycle, **Enter** keeps the draft and returns to it without sending, and **Esc** undoes.
+- **Tab** in the message box focuses the translate button and switches the draft to the first language. The keys are the same as the search script's: **Space**/**←**/**→**/digits cycle, **Enter** keeps the draft and returns to it without sending, and **Esc** undoes.
 - While Slack's :emoji:/@mention autocomplete is open, or inside a list or code block, Tab keeps doing what Slack uses it for.
 - **Esc** in the message box hides the chip.
 - **Formatting is kept.** Bold, italic, strike, lists and quotes stay as they are. Inline code, code blocks, links, @mentions, #channels and emoji are passed through untouched.
